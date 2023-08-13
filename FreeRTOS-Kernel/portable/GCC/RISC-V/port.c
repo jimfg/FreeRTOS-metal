@@ -978,3 +978,24 @@ StackType_t * pxPortInitialiseStack( StackType_t * pxTopOfStack,
 	}
 #endif /* configENABLE_FPU */
 /*-----------------------------------------------------------*/
+
+UBaseType_t uxPortSetInterruptMaskFromISR()
+{
+	//static BaseType_t nested = 0;
+	UBaseType_t uxStatus;
+	__asm__ volatile("csrr %0, mstatus" : "=r"(uxStatus));
+	uxStatus >>= 3;
+	uxStatus &= 1;
+	__asm__ volatile("csrc mstatus, 8");
+	//nested++;
+	//return nested;
+	return uxStatus;
+}
+
+void vPortClearInterruptMaskFromISR( UBaseType_t uxSavedStatusValue)
+{
+	if ( uxSavedStatusValue )
+		__asm__ volatile("csrs mstatus, 8");
+	//nested--;
+	//if (nested == 0)
+}

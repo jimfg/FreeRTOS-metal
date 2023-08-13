@@ -76,7 +76,7 @@
     #error __riscv_xlen with an unsupported value
 #endif /* __riscv_xlen == ?? */
 
-#include "FreeRTOSConfig.h"
+#include "FreeRTOSConfig_forASM.h"
 
 #include "freertos_risc_v_chip_specific_extensions.h"
 
@@ -90,8 +90,12 @@
 
 #define PORT_CONTEXT_mepcIDX		(portasmNB_REGS_SAVED)
 #define PORT_CONTEXT_mstatusIDX		(portasmNB_REGS_SAVED + 1)
-
-#define portasmLAST_BASE_REGS		(portasmNB_REGS_SAVED + 2)
+/* the 16-byte align problem? */
+#if __riscv_xlen == 32
+#define portasmLAST_BASE_REGS		(((portasmNB_REGS_SAVED + 2) + 3) & ~0x3)
+#else /* == 64 */
+#define portasmLAST_BASE_REGS		(((portasmNB_REGS_SAVED + 2) + 1) & ~0x1)
+#endif
 
 /* Number of FPU register */
 #ifdef __riscv_fdiv
@@ -162,6 +166,7 @@ definitions. */
 .extern pullNextTime
 .extern uxTimerIncrementsForOneTick /* size_t type so 32-bit on 32-bit core and 64-bits on 64-bit core. */
 .extern xISRStackTop
+.extern xISRStack
 .extern portHANDLE_INTERRUPT
 .extern portHANDLE_EXCEPTION
 /*------------------------------------------------------------------*/
@@ -567,8 +572,17 @@ handle_interrupt:
     portSAVE_FpuReg
 #endif /* __riscv_fdiv */
 
+    /* If already on the isr stack, don't retrieve from current tcb */
+    la t0, xISRStack 
+    bltu sp, t0, 1f
+    load_x t0, xISRStackTop /* lw t0, somesymbol */
+    bgeu sp, t0, 1f
+    /* so already on isr stack */
+    mv s1, sp
+    j 2f
+
     /* Load pxCurrentTCB and update first TCB member(pxTopOfStack) with sp. */
-    load_x  s0, pxCurrentTCB
+1:  load_x  s0, pxCurrentTCB
     store_x  sp, 0( s0 )
 
     /* Save sp into s1 */
@@ -576,7 +590,7 @@ handle_interrupt:
     load_x sp, xISRStackTop			/* Switch to ISR stack before function call. */
 
 #if( portasmHAS_CLINT != 0 )
-    csrr    t2, mcause
+2:  csrr    t2, mcause
     andi    t2, t2, 0x3FF			/* extract EXCCODE bit fields */
     addi t1, x0, 7					/* 7 == machine timer interrupt. */
     bne t2, t1, external_interrupt
@@ -618,11 +632,11 @@ restore_before_exit:
 #endif /* portasmHAS_CLINT */
 
 external_interrupt:
-    /* Switch to ISR stack before function call. */
-    load_x sp, xISRStackTop
+    /* Switch to ISR stack before function call. -> already i think */
+    /*load_x sp, xISRStackTop*/
     jal portHANDLE_INTERRUPT
     mv	sp, s1
-    j end_trap_handler
+    j end_trap_handler_1
 
 unrecoverable_error:
     csrr 	t0, mcause              /* For viewing in the debugger only. */
@@ -636,9 +650,21 @@ switch_context:
     load_x s0, pxCurrentTCB			/* Load pxCurrentTCB. */
     load_x  sp, 0( s0 )				/* Read sp from first TCB member. */
     jal vPortPmpSwitch   			/* Call C function that will return if not MPU setting */
+    j end_trap_handler
 
-end_trap_handler:
-    load_x s0, pxCurrentTCB			/* Load pxCurrentTCB. */
+end_trap_handler_1:
+    /* now sp points to tcb stack or isr stack depending on whether is nested intr */
+    la t0, xISRStack 
+    bltu sp, t0, 1f
+    load_x t0, xISRStackTop /* lw t0, somesymbol */
+    bgeu sp, t0, 1f
+    /* nested intr */
+    j 2f
+
+end_trap_handler:  
+1:  load_x s0, pxCurrentTCB			/* Load pxCurrentTCB. */
+    /* pxCurrentTCB maybe different, retrieve sp for that task */
+    load_x sp, 0(s0)
 
     /* Update privilege_status if needed */
     load_x  a0, PORT_CONTEXT_mstatusOFFSET(sp)
@@ -652,12 +678,12 @@ end_trap_handler:
 #endif /* __riscv_fdiv */
 
     portasmRESTORE_ADDITIONAL_REGISTERS
-
+    
     load_x s0, pxCurrentTCB			/* Load pxCurrentTCB. */
     load_x  t1, PORT_CONTEXT_xOFFSET(2)(sp)
     store_x  t1, 0( s0 )			/* Write sp saved value to first TCB member. */
 
-    portRESTORE_BaseReg
+2:  portRESTORE_BaseReg
     load_x  x2, PORT_CONTEXT_xOFFSET(2)(sp)
     mret
 /*-----------------------------------------------------------*/
