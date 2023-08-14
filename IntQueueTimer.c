@@ -1,65 +1,121 @@
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+
 #include "FreeRTOS.h"
 #include "task.h"
 
 #include "IntQueueTimer.h"
 #include "IntQueue.h"
 
-#include "metal/machine.h"
-#include "metal/machine/platform.h"
-
-/* additional to be add */
-#define timerINT_0_FREQUENCY    ( 207UL )
-#define timerINT_1_FREQUENCY    ( 213UL )
+#define timerINT_0_FREQUENCY    ( 287UL )
+#define timerINT_1_FREQUENCY    ( 301UL )
 
 #define timerLOWER_PRIORITY     ( configMAX_API_CALL_INTERRUPT_PRIORITY - 1 )
 #define timerMEDIUM_PRIORITY    ( configMAX_API_CALL_INTERRUPT_PRIORITY     )
 
-void pwmx_isr0(int id, void *data)
+/* PLIC */
+/* help manipulating */
+#define PLIC_SOURCE_SHIFT        5
+#define PLIC_SOURCE_MASK         0x1f
+#define PLIC_REG_BIT(source)     ( 1 << ( ( source ) & PLIC_SOURCE_MASK ) )
+/* memory mapped registers */
+#define PLIC_PRIORITY_START      0x0c000000UL
+#define PLIC_PRIORITY(source)    ( * ( ( volatile uint32_t * )( PLIC_PRIORITY_START + ( source ) * 4 ) ) )
+#define PLIC_PENDING_START       0x0c001000UL
+#define PLIC_PENDING(source)     ( * ( ( volatile uint32_t * )( PLIC_PENDING_START + ( ( source ) >> PLIC_SOURCE_SHIFT ) * 4 ) ) )
+#define PLIC_ENABLE_START        0x0c002000UL
+#define PLIC_ENABLE(source)      ( * ( ( volatile uint32_t * )( PLIC_ENABLE_START + ( ( source ) >> PLIC_SOURCE_SHIFT ) * 4 ) ) )
+#define PLIC_THRESHOLD        	 ( * ( ( volatile uint32_t * ) 0x0c200000UL ) )
+#define PLIC_CLAIM_COMPLETE      ( * ( ( volatile uint32_t * ) 0x0c200004UL ) )
+
+/* GPIO */
+#define GPIO_IOF_EN              ( * ( ( volatile uint32_t * ) 0x10012038UL ) )
+#define GPIO_IOF_SEL             ( * ( ( volatile uint32_t * ) 0x1001203cUL ) )
+#define GPIO_REG_BIT(num)        ( 1 << ( num ) )
+
+/* PWM */
+/* bits in PWM_x_PWMCFG */
+#define PWM_PRESCALE_BITS           0xf
+#define PWM_STICKY_BIT              ( 1 << 8 )
+#define PWM_ZEROCMP_BIT             ( 1 << 9 )
+#define PWM_DEGLITCH_BIT            ( 1 << 10 )
+#define PWM_ENALWAYS_BIT            ( 1 << 12 )
+#define PWM_PWMCMP0IP_BIT           ( 1 << 28 )
+/* memory mapped registers */
+#define PWM_1_BASE                  0x10025000UL
+#define PWM_1_PWMCFG                ( * ( ( volatile uint32_t * )( PWM_1_BASE ) ) )
+#define PWM_1_PWMCMP0               ( * ( ( volatile uint32_t * )( PWM_1_BASE + 0x20 ) ) )
+#define PWM_2_BASE                  0x10035000UL
+#define PWM_2_PWMCFG                ( * ( ( volatile uint32_t * )( PWM_2_BASE ) ) )
+#define PWM_2_PWMCMP0               ( * ( ( volatile uint32_t * )( PWM_2_BASE + 0x20 ) ) )
+
+#define PWM_1_PWMCMP0IP_PLIC_SOURCE 44
+#define PWM_1_PWMCMP0IP_GPIO_NUMBER 20
+#define PWM_2_PWMCMP0IP_PLIC_SOURCE 48
+#define PWM_2_PWMCMP0IP_GPIO_NUMBER 10
+
+/* frequency of high frequency alternative oscillator which is used
+ * in default initialization of freedom metal
+ */
+#define CLOCK_RATE               16000000
+
+void pwmx_isr0( unsigned plic_source )
 {
-	metal_pwm_clr_interrupt((struct metal_pwm *)data, 0);
-	if (id == 44) {
+	if ( plic_source == PWM_1_PWMCMP0IP_PLIC_SOURCE ) {
+
+		PWM_1_PWMCFG &= ~PWM_PWMCMP0IP_BIT;
 		portYIELD_FROM_ISR( xFirstTimerHandler() );
-	} else if (id == 48) {
+
+	} else if ( plic_source == PWM_2_PWMCMP0IP_PLIC_SOURCE ) {
+
+		PWM_2_PWMCFG &= ~PWM_PWMCMP0IP_BIT;
 		portYIELD_FROM_ISR( xSecondTimerHandler() );
+
 	}
 }
 
+/* given frequency wanted, calculate prescale and count for pwm.
+ * return zero for success
+ */
+int pwm_frequency_to_setting( unsigned frequency, unsigned *prescale_ptr, unsigned *count_ptr )
+{
+	unsigned prescale = 0, count;
+
+	do {
+		count = CLOCK_RATE / ( 1UL << prescale ) / frequency;
+	} while ( count > 65535UL && prescale++ <= 15UL );
+
+	if ( prescale > 15UL )
+		return 1;
+	*prescale_ptr = prescale;
+	*count_ptr = count;
+	return 0;
+}
+/* pwm1 as timer 0, pwm2 as timer 1 */
 void vInitialiseTimerForIntQueueTest( void )
 {
-	struct metal_interrupt *plic;
-	struct metal_pwm *pwm1, *pwm2;
-	int pwm1_id0, pwm2_id0;
+	PLIC_PRIORITY( PWM_1_PWMCMP0IP_PLIC_SOURCE ) = timerLOWER_PRIORITY;
+	PLIC_PRIORITY( PWM_2_PWMCMP0IP_PLIC_SOURCE ) = timerMEDIUM_PRIORITY;
+
+	GPIO_IOF_EN |= GPIO_REG_BIT( PWM_1_PWMCMP0IP_GPIO_NUMBER ) | GPIO_REG_BIT( PWM_2_PWMCMP0IP_GPIO_NUMBER );
+	GPIO_IOF_SEL |= GPIO_REG_BIT( PWM_1_PWMCMP0IP_GPIO_NUMBER ) | GPIO_REG_BIT( PWM_2_PWMCMP0IP_GPIO_NUMBER );
+	PWM_1_PWMCFG = PWM_2_PWMCFG = 0;
+
+	unsigned prescale, count;
+	if ( pwm_frequency_to_setting( timerINT_0_FREQUENCY, &prescale, &count ) )
+		configPRINT_STRING("set freq failed, pwm1\r\n");
+	PWM_1_PWMCFG |= prescale;
+	PWM_1_PWMCMP0 = --count;
 	
-	plic = (struct metal_interrupt *)&__metal_dt_interrupt_controller_c000000;
+	if ( pwm_frequency_to_setting( timerINT_1_FREQUENCY, &prescale, &count ) )
+		configPRINT_STRING("set freq failed, pwm 2\r\n");
+	PWM_2_PWMCFG |= prescale;
+	PWM_2_PWMCMP0 = --count;
 
-	pwm1 = metal_pwm_get_device(1);
-	pwm1_id0 = metal_pwm_get_interrupt_id(pwm1, 0);		/* source 44 for PLIC */
-	metal_interrupt_register_handler(plic, pwm1_id0, pwmx_isr0, pwm1);
-	metal_interrupt_set_priority(plic, pwm1_id0, timerLOWER_PRIORITY);
+	PWM_1_PWMCFG |= PWM_ZEROCMP_BIT | PWM_DEGLITCH_BIT | PWM_ENALWAYS_BIT | PWM_STICKY_BIT;
+	PWM_2_PWMCFG |= PWM_ZEROCMP_BIT | PWM_DEGLITCH_BIT | PWM_ENALWAYS_BIT | PWM_STICKY_BIT;
 
-	pwm2 = metal_pwm_get_device(2);
-	pwm2_id0 = metal_pwm_get_interrupt_id(pwm2, 0);		/* source 48 for PLIC */
-	metal_interrupt_register_handler(plic, pwm2_id0, pwmx_isr0, pwm2);
-	metal_interrupt_set_priority(plic, pwm2_id0, timerMEDIUM_PRIORITY);
-
-	metal_pwm_enable(pwm1);
-	metal_pwm_set_freq(pwm1, 0, timerINT_0_FREQUENCY);
-	metal_pwm_set_duty(pwm1, 1, 0, METAL_PWM_PHASE_CORRECT_DISABLE);
-	metal_pwm_set_duty(pwm1, 2, 0, METAL_PWM_PHASE_CORRECT_DISABLE);
-	metal_pwm_set_duty(pwm1, 3, 0, METAL_PWM_PHASE_CORRECT_DISABLE);
-
-	metal_pwm_enable(pwm2);
-	metal_pwm_set_freq(pwm2, 0, timerINT_1_FREQUENCY);
-	metal_pwm_set_duty(pwm2, 1, 0, METAL_PWM_PHASE_CORRECT_DISABLE);
-	metal_pwm_set_duty(pwm2, 2, 0, METAL_PWM_PHASE_CORRECT_DISABLE);
-	metal_pwm_set_duty(pwm2, 3, 0, METAL_PWM_PHASE_CORRECT_DISABLE);
-
-	metal_pwm_trigger(pwm1, 0, METAL_PWM_CONTINUOUS);
-	metal_pwm_cfg_interrupt(pwm1, METAL_PWM_INTERRUPT_ENABLE);
-	
-	metal_pwm_trigger(pwm2, 0, METAL_PWM_CONTINUOUS);
-	metal_pwm_cfg_interrupt(pwm2, METAL_PWM_INTERRUPT_ENABLE);
-
-	metal_interrupt_enable(plic, pwm1_id0);
-	metal_interrupt_enable(plic, pwm2_id0);
+	PLIC_ENABLE( PWM_1_PWMCMP0IP_PLIC_SOURCE ) |= PLIC_REG_BIT( PWM_1_PWMCMP0IP_PLIC_SOURCE );
+	PLIC_ENABLE( PWM_2_PWMCMP0IP_PLIC_SOURCE ) |= PLIC_REG_BIT( PWM_2_PWMCMP0IP_PLIC_SOURCE );
 }
