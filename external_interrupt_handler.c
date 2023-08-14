@@ -20,7 +20,6 @@
 #define PLIC_THRESHOLD        	 (*((volatile uint32_t *)0x0c200000UL))
 #define PLIC_CLAIM_COMPLETE      (*((volatile uint32_t *)0x0c200004UL))
 
-/* not necessary, just keep for debugging */
 volatile unsigned nesting_depth = 0, max_nesting_depth = 0;
 
 extern void pwmx_isr0(unsigned plic_source);
