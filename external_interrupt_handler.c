@@ -1,5 +1,5 @@
 /* external_interrupt_handler can be used as portHANDLE_INTERRUPT 
- * to enbale interrupt nesting.
+ * to enbale interrupt nesting(of only external interrupts now).
  */
 
 /* control status registers bits */
@@ -28,6 +28,8 @@ extern void pwmx_isr0(unsigned plic_source);
  * if software interrupt is not considered */
 void external_interrupt_handler( void )
 {
+	unsigned mie;
+
 	nesting_depth++;
 	if (nesting_depth > max_nesting_depth)
 		max_nesting_depth = nesting_depth;
@@ -39,17 +41,17 @@ void external_interrupt_handler( void )
 	
 	PLIC_THRESHOLD = plic_source_priority;
 
-	__asm__ volatile("csrc mie, %0" :: "r"(MIE_MTIE));
+	__asm__ volatile("csrrc %0, mie, %1" : "=r"(mie) : "r"(MIE_MTIE));
 
 	__asm__ volatile("csrs mstatus, %0" :: "r"(MSTATUS_MIE));
 
-	/* temporarily set so, should change to application specific function */
+	/* temporarily set so, should change to application specific function */	
 	pwmx_isr0(plic_source);
-
+	
 	__asm__ volatile("csrc mstatus, %0" :: "r"(MSTATUS_MIE));
 	
 	if (nesting_depth == 1)
-		__asm__ volatile("csrs mie, %0" :: "r"(MIE_MTIE));
+		__asm__ volatile("csrw mie, %0" :: "r"(mie));
 
 	PLIC_THRESHOLD = plic_threshold;
 	
@@ -57,4 +59,5 @@ void external_interrupt_handler( void )
 
 	nesting_depth--;
 	return;
+
 }

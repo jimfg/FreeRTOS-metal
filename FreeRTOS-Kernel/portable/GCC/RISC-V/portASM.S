@@ -90,11 +90,13 @@
 
 #define PORT_CONTEXT_mepcIDX		(portasmNB_REGS_SAVED)
 #define PORT_CONTEXT_mstatusIDX		(portasmNB_REGS_SAVED + 1)
+#define PORT_CONTEXT_mieIDX		(portasmNB_REGS_SAVED + 2)
+#define PORT_CONTEXT_plic_thresholdIDX	(portasmNB_REGS_SAVED + 3)
 /* the 16-byte align problem? */
 #if __riscv_xlen == 32
-#define portasmLAST_BASE_REGS		(((portasmNB_REGS_SAVED + 2) + 3) & ~0x3)
+#define portasmLAST_BASE_REGS		(((portasmNB_REGS_SAVED + 4) + 3) & ~0x3)
 #else /* == 64 */
-#define portasmLAST_BASE_REGS		(((portasmNB_REGS_SAVED + 2) + 1) & ~0x1)
+#define portasmLAST_BASE_REGS		(((portasmNB_REGS_SAVED + 4) + 1) & ~0x1)
 #endif
 
 /* Number of FPU register */
@@ -123,12 +125,14 @@
 #endif /* __riscv_fdiv */
 
 /* used in assembler, as byte offsets from the start of the context */
-#define PORT_CONTEXT_xIDX(X)		(X) /* index into "raw" for register x? */
-#define PORT_CONTEXT_xOFFSET(X) 	(PORT_CONTEXT_xIDX(X)		* portWORD_SIZE)
-#define PORT_CONTEXT_mepcOFFSET     (PORT_CONTEXT_mepcIDX		* portWORD_SIZE)
-#define PORT_CONTEXT_mstatusOFFSET  (PORT_CONTEXT_mstatusIDX	* portWORD_SIZE)
-#define PORT_CONTEXT_arsOFFSET   	(PORT_CONTEXT_arsIDX		* portWORD_SIZE)
-#define PORT_CONTEXT_fpursOFFSET   	(PORT_CONTEXT_fpursIDX		* portWORD_SIZE)
+#define PORT_CONTEXT_xIDX(X)              (X) /* index into "raw" for register x? */
+#define PORT_CONTEXT_xOFFSET(X)           (PORT_CONTEXT_xIDX(X)			* portWORD_SIZE)
+#define PORT_CONTEXT_mepcOFFSET           (PORT_CONTEXT_mepcIDX			* portWORD_SIZE)
+#define PORT_CONTEXT_mstatusOFFSET        (PORT_CONTEXT_mstatusIDX		* portWORD_SIZE)
+#define PORT_CONTEXT_mieOFFSET            (PORT_CONTEXT_mieIDX			* portWORD_SIZE)
+#define PORT_CONTEXT_plic_thresholdOFFSET (PORT_CONTEXT_plic_thresholdIDX	* portWORD_SIZE)
+#define PORT_CONTEXT_arsOFFSET            (PORT_CONTEXT_arsIDX			* portWORD_SIZE)
+#define PORT_CONTEXT_fpursOFFSET          (PORT_CONTEXT_fpursIDX		* portWORD_SIZE)
 
 #define PORT_CONTEXT_fpuOFFSET(X) 	((X) 						* portFPUWORD_SIZE)
 /* total size of the structure usable in ASM. */
@@ -342,8 +346,13 @@ definitions. */
     /* Save mcause, mepc & mstatus state */
     csrr a4, mepc
     csrr a5, mstatus		/* Required for MPIE bit. */
+    csrr a6, mie
+    lui a7, 0xc200
+    load_x a7, (a7)
     store_x a4, PORT_CONTEXT_mepcOFFSET(sp)
     store_x a5, PORT_CONTEXT_mstatusOFFSET(sp)
+    store_x a6, PORT_CONTEXT_mieOFFSET(sp)
+    store_x a7, PORT_CONTEXT_plic_thresholdOFFSET(sp)
     .endm
 /*************************************************************/
 
@@ -351,8 +360,13 @@ definitions. */
     /* Restore mepc & mstatus state */
     load_x  t0, PORT_CONTEXT_mepcOFFSET(sp)
     load_x  t1, PORT_CONTEXT_mstatusOFFSET(sp)
+    load_x  t2, PORT_CONTEXT_mieOFFSET(sp)
+    load_x  t3, PORT_CONTEXT_plic_thresholdOFFSET(sp)
+    lui     t4, 0xc200
     csrw	mepc, t0
     csrw	mstatus, t1
+    csrw	mie, t2
+    store_x	t3, (t4)
 
     load_x  x1,  PORT_CONTEXT_xOFFSET(1)(sp)		/* x1(ra)		Return address */
                                                     /* x2(sp) ***** Should be save ouside this macro */
@@ -806,6 +820,8 @@ pxPortAsmInitialiseStack:
 
     store_x a1, PORT_CONTEXT_mepcOFFSET(t2)
     store_x a3, PORT_CONTEXT_mstatusOFFSET(t2)
+    store_x a4, PORT_CONTEXT_mieOFFSET(t2)
+    store_x a5, PORT_CONTEXT_plic_thresholdOFFSET(t2)
 
     /* The number of additional registers. */
     addi t0, x0, portasmADDITIONAL_CONTEXT_SIZE

@@ -1,0 +1,7 @@
+things not considered or/and to be added
+
+pmp stuff
+to be more generic
+  (plic, clic, fpu...)
+  e.g. addr like plic threshold are hard coded
+nesting of different sources for clint

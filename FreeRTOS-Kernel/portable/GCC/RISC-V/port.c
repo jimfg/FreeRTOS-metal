@@ -51,6 +51,10 @@ PRIVILEGED_DATA StackType_t xISRStackTop;
  */
 void vPortSetupTimerInterrupt( void ) __attribute__( ( weak ) );
 
+
+//static UBaseType_t uxCriticalNesting = -1;
+
+
 #if( configENABLE_FPU == 1 )
 	/*
 	 * Setup the Floating Point Unit (FPU).
@@ -630,6 +634,8 @@ BaseType_t xPortStartScheduler( void ) PRIVILEGED_FUNCTION
 	}
 	#endif /* configASSERT_DEFINED */
 
+	//uxCriticalNesting = 0;
+
 	/* If there is a CLINT then it is ok to use the default implementation
 	in this file, otherwise vPortSetupTimerInterrupt() must be implemented to
 	configure whichever clock is to be used to generate the tick interrupt. */
@@ -914,8 +920,8 @@ StackType_t * pxPortInitialiseStack( StackType_t * pxTopOfStack,
 										void * pvParameters ) PRIVILEGED_FUNCTION
 #endif /* if ( portUSING_MPU_WRAPPERS == 1 ) */
 {
-	UBaseType_t mstatus;
-	extern StackType_t * pxPortAsmInitialiseStack( StackType_t *, TaskFunction_t, void *, UBaseType_t);
+	UBaseType_t mstatus, mie, plic_threshold;
+	extern StackType_t * pxPortAsmInitialiseStack( StackType_t *, TaskFunction_t, void *, UBaseType_t, UBaseType_t, UBaseType_t);
 
 	/* Generate the value to set in mstatus. */
 	#if( portUSING_MPU_WRAPPERS == 1 )
@@ -955,7 +961,9 @@ StackType_t * pxPortInitialiseStack( StackType_t * pxTopOfStack,
 		);
 	#endif /* ( portUSING_MPU_WRAPPERS == 1 ) */
 
-	return pxPortAsmInitialiseStack(pxTopOfStack, pxCode, pvParameters, mstatus);
+	mie = 0x880;
+	plic_threshold = 0;
+	return pxPortAsmInitialiseStack(pxTopOfStack, pxCode, pvParameters, mstatus, mie, plic_threshold);
 }
 /*-----------------------------------------------------------*/
 
@@ -979,23 +987,75 @@ StackType_t * pxPortInitialiseStack( StackType_t * pxTopOfStack,
 #endif /* configENABLE_FPU */
 /*-----------------------------------------------------------*/
 
-UBaseType_t uxPortSetInterruptMaskFromISR()
+__attribute__((naked)) UBaseType_t uxPortSetInterruptMaskFromISR( void )
 {
-	//static BaseType_t nested = 0;
-	UBaseType_t uxStatus;
-	__asm__ volatile("csrr %0, mstatus" : "=r"(uxStatus));
-	uxStatus >>= 3;
-	uxStatus &= 1;
-	__asm__ volatile("csrc mstatus, 8");
-	//nested++;
-	//return nested;
+	/* It is too long and very possibly longer than
+	 * the code protected by this critical section.
+	UBaseType_t uxStatus, i;
+	__asm__ volatile( "csrr %0, mstatus" : "=r"( i ) );
+	uxStatus = ( i >> 3 ) & 1;
+
+	__asm__ volatile( "csrr %0, mie" : "=r"( i ) );
+	uxStatus |= ( ( i >> 7 ) & 1 ) << 1;
+
+	i = * ( ( volatile unsigned * )0xc200000 );
+	uxStatus |= i << 2;
+
+	__asm__ volatile( "csrc mie, 0x80" );
+	* ( ( volatile unsigned * )0xc200000 ) = configMAX_API_CALL_INTERRUPT_PRIORITY;
+	
 	return uxStatus;
+	*/
+
+	/* Also long... and assume PLIC threshold is less than 0x80 */
+	__asm__ __volatile__ (
+		"csrc mstatus, 8 \n"
+		"addi t1, zero, 0x80 \n"
+		"csrrc t0, mie, t1 \n"
+		"andi a0, t0, 0x80 \n"
+		"lui t0, 0xc200 \n"
+		"lw t1, (t0) \n"
+		"or a0, a0, t1 \n"
+		"addi t1, zero, %0 \n"
+		"sw t1, (t0) \n"
+		"csrs mstatus, 8 \n" 
+		"ret"
+		::"i" ( configMAX_API_CALL_INTERRUPT_PRIORITY ):"t0", "a0", "t1"
+	);
+}
+__attribute__((naked)) void vPortClearInterruptMaskFromISR( UBaseType_t uxSavedStatusValue )
+{
+	__asm__ __volatile__ (
+		"csrc mstatus, 8 \n"
+		"andi t0, a0, 0x80 \n"
+		"csrs mie, t0 \n"
+		"andi a0, a0, 0x7f \n"
+		"lui t0, 0xc200 \n"
+		"sw a0, (t0) \n"
+		"csrs mstatus, 8 \n"
+		"ret"
+		:::"t0", "a0"	
+	);
 }
 
-void vPortClearInterruptMaskFromISR( UBaseType_t uxSavedStatusValue)
+void vPortSetInterruptMask( void )
 {
-	if ( uxSavedStatusValue )
-		__asm__ volatile("csrs mstatus, 8");
-	//nested--;
-	//if (nested == 0)
+	__asm__ volatile (
+		"csrc mstatus, %3 \n"
+		"csrc mie, %0 \n"
+		"sw %1, (%2) \n"
+		"csrs mstatus, %3"
+		:: "r"(0x80), "r"(configMAX_API_CALL_INTERRUPT_PRIORITY), "r"(0xc200000), "r"(8)
+	);
+}
+
+void vPortClearInterruptMask( void )
+{
+    __asm__ volatile (
+		"csrc mstatus, %2 \n"
+		"sw x0, (%0) \n"
+		"csrs mie, %1 \n"
+		"csrs mstatus, %2"
+		:: "r"(0xc200000), "r"(0x80), "r"(8)
+	);
 }

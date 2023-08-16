@@ -290,30 +290,25 @@ extern void vTaskEnterCritical( void );
 extern void vTaskExitCritical( void );
 extern UBaseType_t uxPortSetInterruptMaskFromISR( void );
 extern void vPortClearInterruptMaskFromISR( UBaseType_t );
+extern void vPortSetInterruptMask( void );
+extern void vPortClearInterruptMask( void );
 
 /*#define portSET_INTERRUPT_MASK_FROM_ISR() 			0
 #define portCLEAR_INTERRUPT_MASK_FROM_ISR( uxSavedStatusValue ) ( void ) uxSavedStatusValue*/
-#define portSET_INTERRUPT_MASK_FROM_ISR()                       uxPortSetInterruptMaskFromISR();
-#define portCLEAR_INTERRUPT_MASK_FROM_ISR( uxSavedStatusValue ) vPortClearInterruptMaskFromISR( uxSavedStatusValue );
+#define portSET_INTERRUPT_MASK_FROM_ISR()                       uxPortSetInterruptMaskFromISR()
+#define portCLEAR_INTERRUPT_MASK_FROM_ISR( uxSavedStatusValue ) vPortClearInterruptMaskFromISR( uxSavedStatusValue )
 #if( portUSING_MPU_WRAPPERS == 1 )
 #define portDISABLE_INTERRUPTS()	vPortSyscall(portSVC_DISABLE_INTERRUPTS)
 #define portENABLE_INTERRUPTS()		vPortSyscall(portSVC_ENABLE_INTERRUPTS)
 #else
-#define portDISABLE_INTERRUPTS()	__asm volatile ( "csrc mstatus, 8" )
-/*#define portDISABLE_INTERRUPTS() \
-    __asm volatile (             \
-          "csrc mie, %0 \n\t"    \
-          "sw %1, 0(%2) \n\t"    \
-	  :: "r"(0x80), "r"(configMAX_API_CALL_INTERRUPT_PRIORITY), "r"(0xc200000))*/
-#define portENABLE_INTERRUPTS()		__asm volatile ( "csrs mstatus, 8" )
-/*#define portENABLE_INTERRUPTS()  \
-    __asm volatile (             \
-          "sw %0, 0(%1) \n\t"    \
-          "csrs mie, %2 \n\t"    \
-          :: "r"(0), "r"(0xc200000), "r"(0x80))  */
+//#define portDISABLE_INTERRUPTS()	__asm volatile ( "csrc mstatus, 8" )
+#define portDISABLE_INTERRUPTS()  vPortSetInterruptMask()
+//#define portENABLE_INTERRUPTS()		__asm volatile ( "csrs mstatus, 8" )
+#define portENABLE_INTERRUPTS()   vPortClearInterruptMask()
 #endif
 #define portENTER_CRITICAL()	vTaskEnterCritical()
 #define portEXIT_CRITICAL()		vTaskExitCritical()
+
 /*-----------------------------------------------------------*/
 
 /* Architecture specific optimisations. */
